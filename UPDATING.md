@@ -28,3 +28,13 @@ The **Check upstream** workflow runs this every Monday and opens an issue when L
 2. Edit `dockerTag` in `startos/manifest/index.ts`.
 3. Edit `startos/versions/current.ts`: the version is the Lidarr version without the `-ls` suffix (`'3.1.6.5079:0'`), with localized release notes. A new LinuxServer build of the same Lidarr version is a downstream revision bump (`:1`).
 4. Install on a box and confirm the login still works and an old password is rejected after Reset Admin Password.
+
+## Releasing
+
+Commit the bump and push `master`. Nothing else is needed.
+
+The **Tag and Release** workflow runs on every push to `master` that changes more than Markdown. It reads the package id and `version` from `startos/versions/current.ts` and asks the registry in the `REFERENCE_REGISTRY` repository variable whether that version exists. If it does, the run stops; a push that doesn't change the version publishes nothing. Otherwise it force-pushes the tag `v` plus the version with `:` replaced by `_` (`3.1.6.5079:0` → `v3.1.6.5079_0`), builds both architectures, creates the GitHub Release with the `.s9pk` files, and adds them to the registry in `RELEASE_REGISTRY`, which downloads them from the release. It signs with the `DEV_KEY` repository secret, a CI key that registry authorizes to publish this package.
+
+- A push that bumps the version reaches users right away, so push the bump only after step 4 passes.
+- Keep `version` a quoted string literal; the workflow reads it from the file's text.
+- A published version is never rebuilt, so a packaging-only change that should reach users raises the revision after the colon (`:0` → `:1`).

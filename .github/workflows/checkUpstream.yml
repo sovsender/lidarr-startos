@@ -1,0 +1,83 @@
+name: Check upstream
+
+# Opens an issue when LinuxServer publishes a stable image of a Lidarr version
+# newer than the one pinned in startos/manifest/index.ts. A new -lsNN build of
+# the pinned Lidarr version is ignored.
+on:
+  schedule:
+    - cron: '23 15 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Compare the pinned Lidarr version with LinuxServer's latest stable image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          manifest=$(gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$GITHUB_REPOSITORY/contents/startos/manifest/index.ts")
+          pinned_tag=$(grep -oP "linuxserver/lidarr:\K[0-9.]+-ls[0-9]+" <<<"$manifest")
+          pinned=${pinned_tag%-ls*}
+
+          # LinuxServer's release marked Latest is its stable image; develop-* and
+          # nightly-* are prereleases. Its tags are the image tags.
+          latest_tag=$(gh api repos/linuxserver/docker-lidarr/releases/latest --jq .tag_name)
+          if ! grep -qE '^[0-9]+(\.[0-9]+)+-ls[0-9]+$' <<<"$latest_tag"; then
+            echo "::error::Unexpected tag on LinuxServer's latest release: $latest_tag"
+            exit 1
+          fi
+          latest=${latest_tag%-ls*}
+
+          if [ "$(printf '%s\n' "$pinned" "$latest" | sort -V | tail -n 1)" = "$pinned" ]; then
+            echo "Up to date: the package pins Lidarr $pinned ($pinned_tag) and LinuxServer's latest stable image is $latest_tag."
+            exit 0
+          fi
+
+          title="Lidarr $latest is available"
+          issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 200 --json number,title,state)
+          if jq -e --arg t "$title" 'any(.[]; .title == $t)' <<<"$issues" >/dev/null; then
+            echo "An issue for $latest already exists."
+            exit 0
+          fi
+
+          # lscr.io serves ghcr.io's images and sends anonymous clients to its token endpoint.
+          image="lscr.io/linuxserver/lidarr:$latest_tag"
+          token=$(curl -fsS 'https://ghcr.io/token?scope=repository:linuxserver/lidarr:pull' | jq -r .token)
+          if index=$(curl -fsS -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/linuxserver/lidarr/manifests/$latest_tag"); then
+            arches=$(jq -r '[.manifests[]?.platform.architecture | select(. != "unknown")] | unique | join(", ")' <<<"$index")
+            if jq -e '[.manifests[]?.platform.architecture] | any(. == "amd64") and any(. == "arm64")' <<<"$index" >/dev/null; then
+              status="\`$image\` is on lscr.io for amd64 and arm64."
+            else
+              status="\`$image\` is on lscr.io, but only for ${arches:-an unknown architecture}. The package needs amd64 and arm64."
+            fi
+          else
+            status="\`$image\` could not be found on lscr.io. Check it before bumping."
+          fi
+
+          body=$(cat <<EOF
+          Lidarr [$latest](https://github.com/Lidarr/Lidarr/releases/tag/v$latest) is out. This package pins Lidarr $pinned (\`$pinned_tag\`).
+
+          $status
+
+          Follow [UPDATING.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/master/UPDATING.md) to bump the package.
+          EOF
+          )
+
+          url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body")
+          echo "Opened $url"
+
+          jq -r '.[] | select(.state == "OPEN" and (.title | test("^Lidarr [0-9.]+ is available$"))) | .number' <<<"$issues" \
+            | while read -r n; do
+                gh issue close "$n" --repo "$GITHUB_REPOSITORY" --comment "Superseded by #${url##*/}."
+              done

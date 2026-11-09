@@ -20,6 +20,8 @@ Confirm the tag ships both architectures before pinning it:
 docker manifest inspect lscr.io/linuxserver/lidarr:<tag> | jq -r '.manifests[].platform.architecture'
 ```
 
+The **Check upstream** workflow runs this every Monday and opens an issue when LinuxServer's Latest release carries a newer Lidarr version, saying whether its image is on lscr.io for both architectures; a new `-ls` build of the pinned Lidarr version opens none. GitHub pauses scheduled workflows in a public repository after 60 days without activity; re-enable it from the repository's **Actions** tab.
+
 ## Applying the bump
 
 1. Read Lidarr's release notes (`gh release view -R Lidarr/Lidarr v<version>`) between the old and new versions. A major version can change the host-config API or `config.xml` keys this package writes; check both against `startos/main.ts` and `startos/fileModels/config.xml.ts`.
